@@ -1,0 +1,22 @@
+# Llama family (Llama 2, Llama 3, Llama 3.1, Code Llama)
+# Also covers Mistral, Gemma, Qwen2 — same module structure
+
+mapping:
+  # Embeddings
+  embed.tokens: model.embed_tokens
+
+  # Per-layer components
+  layers.{i}.attention.layer_norm: model.layers.{i}.input_layernorm
+  layers.{i}.attention.q: model.layers.{i}.self_attn.q_proj
+  layers.{i}.attention.k: model.layers.{i}.self_attn.k_proj
+  layers.{i}.attention.v: model.layers.{i}.self_attn.v_proj
+  layers.{i}.attention.out_proj: model.layers.{i}.self_attn.o_proj
+
+  layers.{i}.mlp.layer_norm: model.layers.{i}.post_attention_layernorm
+  layers.{i}.mlp.gate_proj: model.layers.{i}.mlp.gate_proj
+  layers.{i}.mlp.up_proj: model.layers.{i}.mlp.up_proj
+  layers.{i}.mlp.down_proj: model.layers.{i}.mlp.down_proj
+
+  # Output
+  layer_norm_final: model.norm
+  unembed: lm_head

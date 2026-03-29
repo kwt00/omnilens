@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"source .venv/bin/activate && python -m pytest tests/test_tapped_model.py -v 2>&1\",\"timeout\":120000,\"description\":\"Run tests against tiny GPT-2\"}",
+  "error": "Exit code 1\n============================= test session starts ==============================\nplatform darwin -- Python 3.14.0, pytest-9.0.2, pluggy-1.6.0 -- /Users/kevintaylor/Documents/GitHub/jack-exp/.venv/bin/python\ncachedir: .pytest_cache\nrootdir: /Users/kevintaylor/Documents/GitHub/jack-exp\nconfigfile: pyproject.toml\nplugins: anyio-4.13.0\ncollecting ... collected 13 items\n\ntests/test_tapped_model.py::TestTappedModelInit::test_from_pretrained_loads PASSED [  7%]\ntests/test_tapped_model.py::T...",
+  "timestamp": "2026-03-29T08:58:53.478Z",
+  "retry_count": 1
+}
