@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 import torch.nn as nn
 
 from omnilens.registry.loader import Registry
@@ -113,8 +115,6 @@ def _find_submodule_group(
 
     prefixes = [".".join(m.split(".")[:-1]) for m in matches]
     # Return the most common prefix
-    from collections import Counter
-
     prefix_counts = Counter(prefixes)
     most_common = prefix_counts.most_common(1)[0][0]
     return most_common if most_common else None

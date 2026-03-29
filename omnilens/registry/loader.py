@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -109,8 +110,6 @@ def save_registry(registry: Registry, path: str | Path) -> None:
 
 def _collapse_layers(mapping: dict[str, str]) -> dict[str, str]:
     """Try to collapse numbered layer entries back to {i} templates."""
-    import re
-
     templates: dict[str, str] = {}
     non_layer: dict[str, str] = {}
 

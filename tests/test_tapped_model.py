@@ -324,3 +324,127 @@ class TestResidualStream:
             hooks={"layers.0.residual.attn_out": zero_residual},
         )
         assert not torch.allclose(baseline_logits, modified_logits)
+
+
+class TestXRayLogitLens:
+    def test_logit_lens_returns_result(self, small_model):
+        results = small_model.xray.logit_lens(text="Hello world")
+        assert results.logits.ndim == 4  # (n_layers, batch, seq, vocab)
+        assert results.probabilities.ndim == 4
+        assert results.predictions.ndim == 3  # (n_layers, batch, seq)
+
+    def test_logit_lens_shape(self, small_model):
+        results = small_model.xray.logit_lens(text="Hello")
+        n_layers = small_model._detect_n_layers()
+        assert results.logits.shape[0] == n_layers
+        assert results.logits.shape[1] == 1  # batch
+        assert len(results.layer_indices) == n_layers
+
+    def test_logit_lens_specific_layers(self, small_model):
+        results = small_model.xray.logit_lens(text="Hello", layers=[0])
+        assert results.logits.shape[0] == 1
+        assert results.layer_indices == [0]
+
+    def test_logit_lens_probabilities_sum_to_one(self, small_model):
+        results = small_model.xray.logit_lens(text="Hello")
+        sums = results.probabilities.sum(dim=-1)
+        assert torch.allclose(sums, torch.ones_like(sums), atol=1e-4)
+
+    def test_logit_lens_tokens_populated(self, small_model):
+        results = small_model.xray.logit_lens(text="Hello")
+        assert len(results.tokens) > 0
+        assert isinstance(results.tokens[0][0][0], str)
+
+    def test_logit_lens_repr(self, small_model):
+        results = small_model.xray.logit_lens(text="Hello")
+        r = repr(results)
+        assert "LogitLensResult" in r
+
+
+class TestXRayActivationPatching:
+    def test_layer_sweep(self, small_model):
+        results = small_model.xray.activation_patching(
+            clean="The cat sat on",
+            corrupted="The dog sat on",
+            names=["layers.{i}.residual.block_out"],
+            answer_tokens=[" the", " a"],
+        )
+        assert len(results.effects) == 2  # tiny-gpt2 has 2 layers
+        assert results.baseline_metric is not None
+        assert isinstance(results.effects["layers.0.residual.block_out"], float)
+
+    def test_specific_components(self, small_model):
+        results = small_model.xray.activation_patching(
+            clean="Hello world",
+            corrupted="Goodbye world",
+            names=["layers.0.attention.out_proj", "layers.0.mlp.down_proj"],
+            answer_tokens=[" Hello", " Goodbye"],
+        )
+        assert len(results.effects) == 2
+
+    def test_custom_metric(self, small_model):
+        results = small_model.xray.activation_patching(
+            clean="Hello world",
+            corrupted="Goodbye world",
+            names=["layers.{i}.residual.block_out"],
+            metric=lambda logits: logits[0, -1].max().item(),
+        )
+        assert len(results.effects) == 2
+        assert results.baseline_metric is not None
+
+    def test_denoise_mode(self, small_model):
+        noise_results = small_model.xray.activation_patching(
+            clean="Hello world",
+            corrupted="Goodbye world",
+            names=["layers.{i}.residual.block_out"],
+            answer_tokens=[" Hello", " Goodbye"],
+            denoise=False,
+        )
+        denoise_results = small_model.xray.activation_patching(
+            clean="Hello world",
+            corrupted="Goodbye world",
+            names=["layers.{i}.residual.block_out"],
+            answer_tokens=[" Hello", " Goodbye"],
+            denoise=True,
+        )
+        # Baselines should differ (clean vs corrupted run)
+        assert noise_results.baseline_metric != denoise_results.baseline_metric
+
+    def test_top_effects(self, small_model):
+        results = small_model.xray.activation_patching(
+            clean="Hello world",
+            corrupted="Goodbye world",
+            names=["layers.{i}.residual.block_out"],
+            answer_tokens=[" Hello", " Goodbye"],
+        )
+        top = results.top_effects(1)
+        assert len(top) == 1
+        assert isinstance(top[0], tuple)
+        assert isinstance(top[0][0], str)
+        assert isinstance(top[0][1], float)
+
+    def test_repr(self, small_model):
+        results = small_model.xray.activation_patching(
+            clean="Hello",
+            corrupted="Goodbye",
+            names=["layers.0.residual.block_out"],
+            answer_tokens=[" Hello", " Goodbye"],
+        )
+        assert "PatchingResult" in repr(results)
+
+    def test_no_names_raises(self, small_model):
+        with pytest.raises(ValueError, match="Must provide"):
+            small_model.xray.activation_patching(
+                clean="Hello",
+                corrupted="Goodbye",
+                names=[],
+                answer_tokens=[" Hello", " Goodbye"],
+            )
+
+    def test_no_metric_no_tokens_raises(self, small_model):
+        with pytest.raises(ValueError, match="answer_tokens"):
+            small_model.xray.activation_patching(
+                clean="Hello",
+                corrupted="Goodbye",
+                names=["layers.0.residual.block_out"],
+            )

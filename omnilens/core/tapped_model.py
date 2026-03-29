@@ -1,18 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Callable, Optional
+
 import torch
 import torch.nn as nn
-from typing import Callable, Optional
-from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from omnilens.core.cache import ActivationCache
-from omnilens.core.attention_wrap import (
-    AttentionHookPoints,
-    wrap_attention_module,
-    unwrap_attention_module,
-)
+from omnilens.core.attention_wrap import AttentionHookPoints, wrap_attention_module
 from omnilens.core.block_wrap import register_residual_hooks
+from omnilens.core.cache import ActivationCache
+from omnilens.registry.auto_detect import auto_detect_registry
 from omnilens.registry.loader import load_registry, Registry
 
 
@@ -57,6 +55,7 @@ class TappedModel:
         self._block_hook_points = AttentionHookPoints()  # reuse same class
         self._wrap_attention_modules()
         self._wrap_block_modules()
+        self._xray = None
 
     @classmethod
     def from_pretrained(
@@ -205,6 +204,14 @@ class TappedModel:
         """Get the device of the underlying model."""
         return self._device
 
+    @property
+    def xray(self):
+        """Analysis methods namespace (logit lens, activation patching, etc.)."""
+        if self._xray is None:
+            from omnilens.methods.xray import XRay
+            self._xray = XRay(self)
+        return self._xray
+
     def registry_names(self) -> list[str]:
         """List all standardized names available in the current registry."""
         return list(self._registry.keys())
@@ -232,8 +239,6 @@ class TappedModel:
             return builtin
 
         # Fallback: auto-detect
-        from omnilens.registry.auto_detect import auto_detect_registry
-
         detected = auto_detect_registry(self.model)
         if detected is not None:
             return detected
