@@ -7,10 +7,25 @@ from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from omnilens.core.cache import ActivationCache
+from omnilens.core.attention_wrap import (
+    AttentionHookPoints,
+    wrap_attention_module,
+    unwrap_attention_module,
+)
+from omnilens.core.block_wrap import register_residual_hooks
 from omnilens.registry.loader import load_registry, Registry
 
 
 HookFn = Callable[[torch.Tensor, str], Optional[torch.Tensor]]
+
+# Names that are computed inside the attention forward, not module outputs
+DERIVED_ATTENTION_NAMES = {"qk_logits", "weights", "weighted_values"}
+
+# Names that are computed inside the block forward (residual stream)
+DERIVED_RESIDUAL_NAMES = {"residual.input", "residual.attn_out", "residual.block_out"}
+
+# Suffixes that access module parameters instead of hooking outputs
+PARAMETER_SUFFIXES = {"weight", "bias"}
 
 
 class TappedModel:
@@ -37,6 +52,11 @@ class TappedModel:
         self.tokenizer = tokenizer
         self._registry = self._resolve_registry(registry)
         self._hook_handles: list[torch.utils.hooks.RemovableHook] = []
+        self._residual_handles: list[torch.utils.hooks.RemovableHook] = []
+        self._attn_hook_points = AttentionHookPoints()
+        self._block_hook_points = AttentionHookPoints()  # reuse same class
+        self._wrap_attention_modules()
+        self._wrap_block_modules()
 
     @classmethod
     def from_pretrained(
@@ -166,6 +186,25 @@ class TappedModel:
             indent = "  " * depth
             print(f"{indent}{short_name} ({module_type}) -> {name}")
 
+    def to(self, device: str | torch.device) -> TappedModel:
+        """Move the underlying model to a device."""
+        self.model = self.model.to(device)
+        return self
+
+    def generate(self, *args, **kwargs):
+        """Pass-through to the underlying model's generate method."""
+        return self.model.generate(*args, **kwargs)
+
+    @property
+    def config(self):
+        """Access the underlying model's config."""
+        return self.model.config
+
+    @property
+    def device(self) -> torch.device:
+        """Get the device of the underlying model."""
+        return self._device
+
     def registry_names(self) -> list[str]:
         """List all standardized names available in the current registry."""
         return list(self._registry.keys())
@@ -255,14 +294,173 @@ class TappedModel:
                 current = getattr(current, part)
         return current
 
+    def _is_derived_name(self, name: str) -> bool:
+        """Check if a name refers to a derived attention value."""
+        parts = name.split(".")
+        return len(parts) >= 3 and parts[-1] in DERIVED_ATTENTION_NAMES
+
+    def _is_residual_name(self, name: str) -> bool:
+        """Check if a name refers to a residual stream hook point."""
+        # e.g. "layers.0.residual.input" -> check last two parts
+        parts = name.split(".")
+        if len(parts) >= 4:
+            suffix = f"{parts[-2]}.{parts[-1]}"
+            return suffix in DERIVED_RESIDUAL_NAMES
+        return False
+
+    def _is_parameter_name(self, name: str) -> bool:
+        """Check if a name ends with .weight or .bias (parameter access)."""
+        parts = name.split(".")
+        return len(parts) >= 2 and parts[-1] in PARAMETER_SUFFIXES
+
+    def _strip_suffix(self, name: str) -> tuple[str, str]:
+        """Split 'layers.0.attention.q.activations' into ('layers.0.attention.q', 'activations')."""
+        parts = name.rsplit(".", 1)
+        return parts[0], parts[1]
+
+    def _wrap_attention_modules(self) -> None:
+        """Wrap all attention modules to expose intermediate hook points."""
+        config = getattr(self.model, "config", None)
+        if config is None:
+            return
+
+        num_heads = getattr(config, "num_attention_heads", None)
+        if num_heads is None:
+            return
+
+        num_kv_heads = getattr(config, "num_key_value_heads", num_heads)
+        head_dim = getattr(config, "head_dim", None)
+        if head_dim is None:
+            hidden_size = getattr(config, "hidden_size", None)
+            if hidden_size is not None:
+                head_dim = hidden_size // num_heads
+            else:
+                return
+
+        n_layers = self._detect_n_layers()
+        if n_layers is None:
+            return
+
+        # Find attention modules via registry or auto-detection
+        for i in range(n_layers):
+            attn_key = f"layers.{i}.attention.q"
+            if attn_key in self._registry:
+                # Get the attention module (parent of q_proj)
+                q_path = self._registry[attn_key]
+                attn_path = ".".join(q_path.split(".")[:-1])
+                try:
+                    attn_module = self._get_module(attn_path)
+                    wrap_attention_module(
+                        attn_module=attn_module,
+                        layer_idx=i,
+                        num_heads=num_heads,
+                        num_kv_heads=num_kv_heads,
+                        head_dim=head_dim,
+                        hook_points=self._attn_hook_points,
+                        omnilens_prefix=f"layers.{i}.attention",
+                    )
+                except (AttributeError, KeyError):
+                    continue
+
+    def _wrap_block_modules(self) -> None:
+        """Register residual stream hooks on transformer blocks.
+
+        Uses native PyTorch hooks (pre_hook and post_hook) instead of
+        replacing forward methods, so it's architecture-agnostic.
+        """
+        n_layers = self._detect_n_layers()
+        if n_layers is None:
+            return
+
+        for i in range(n_layers):
+            attn_q_key = f"layers.{i}.attention.q"
+            attn_ln_key = f"layers.{i}.attention.layer_norm"
+
+            if attn_q_key not in self._registry or attn_ln_key not in self._registry:
+                continue
+
+            # Block path: parent of the layernorm
+            # e.g. "model.layers.0.input_layernorm" -> "model.layers.0"
+            attn_ln_path = self._registry[attn_ln_key]
+            block_path = ".".join(attn_ln_path.split(".")[:-1])
+
+            # Attention module: parent of q_proj
+            # e.g. "model.layers.0.self_attn.q_proj" -> "model.layers.0.self_attn"
+            q_path = self._registry[attn_q_key]
+            attn_path = ".".join(q_path.split(".")[:-1])
+
+            try:
+                block_module = self._get_module(block_path)
+                attn_module = self._get_module(attn_path)
+                register_residual_hooks(
+                    block_module=block_module,
+                    attn_module=attn_module,
+                    layer_idx=i,
+                    hook_points=self._block_hook_points,
+                    omnilens_prefix=f"layers.{i}",
+                    handles=self._residual_handles,
+                )
+            except (AttributeError, KeyError):
+                continue
+
     def _register_cache_hooks(
         self, cache: ActivationCache, names: list[str]
     ) -> None:
-        """Register forward hooks that store activations in the cache."""
+        """Register forward hooks that store activations in the cache.
+
+        Handles four types of names:
+          - Parameter names (*.weight, *.bias): grab parameter tensor directly
+          - Derived attention names (*.qk_logits, *.weights, *.weighted_values):
+            register on attention hook points
+          - Residual stream names (*.residual.input/attn_out/block_out):
+            register on block hook points
+          - Module names (with optional .activations suffix):
+            register forward hook on the module
+        """
         for name in names:
-            native_path = self._resolve_name(name)
+            # 1. Parameter access — no hook needed
+            if self._is_parameter_name(name):
+                module_name, param = self._strip_suffix(name)
+                resolved = self._resolve_name(module_name)
+                module = self._get_module(resolved)
+                param_tensor = getattr(module, param, None)
+                if param_tensor is not None:
+                    cache[name] = param_tensor.detach()
+                else:
+                    raise KeyError(
+                        f"Module '{module_name}' has no parameter '{param}'."
+                    )
+                continue
+
+            # 2. Derived attention values
+            if self._is_derived_name(name):
+                def make_cache_fn(hook_name: str):
+                    def fn(tensor, _name):
+                        cache[hook_name] = tensor.detach()
+                        return None
+                    return fn
+
+                self._attn_hook_points.add(name, make_cache_fn(name))
+                continue
+
+            # 3. Residual stream values
+            if self._is_residual_name(name):
+                def make_residual_fn(hook_name: str):
+                    def fn(tensor, _name):
+                        cache[hook_name] = tensor.detach()
+                        return None
+                    return fn
+
+                self._block_hook_points.add(name, make_residual_fn(name))
+                continue
+
+            # 4. Module hooks — strip .activations suffix if present
+            resolved_name = name
+            if name.endswith(".activations"):
+                resolved_name = name[: -len(".activations")]
+
+            native_path = self._resolve_name(resolved_name)
             module = self._get_module(native_path)
-            omnilens_name = name  # capture for closure
 
             def make_hook(hook_name: str):
                 def hook_fn(mod, input, output):
@@ -273,15 +471,33 @@ class TappedModel:
 
                 return hook_fn
 
-            handle = module.register_forward_hook(make_hook(omnilens_name))
+            handle = module.register_forward_hook(make_hook(name))
             self._hook_handles.append(handle)
 
     def _register_intervention_hooks(self, hooks: dict[str, HookFn]) -> None:
         """Register forward hooks that can modify activations."""
         for name, hook_fn in hooks.items():
-            native_path = self._resolve_name(name)
+            if self._is_parameter_name(name):
+                raise ValueError(
+                    f"Cannot intervene on parameter '{name}'. "
+                    f"Parameters are read-only. Use .activations for interventions."
+                )
+
+            if self._is_derived_name(name):
+                self._attn_hook_points.add(name, hook_fn)
+                continue
+
+            if self._is_residual_name(name):
+                self._block_hook_points.add(name, hook_fn)
+                continue
+
+            # Strip .activations suffix if present
+            resolved_name = name
+            if name.endswith(".activations"):
+                resolved_name = name[: -len(".activations")]
+
+            native_path = self._resolve_name(resolved_name)
             module = self._get_module(native_path)
-            omnilens_name = name
 
             def make_hook(hook_name: str, user_fn: HookFn):
                 def hook_fn(mod, input, output):
@@ -298,7 +514,7 @@ class TappedModel:
                 return hook_fn
 
             handle = module.register_forward_hook(
-                make_hook(omnilens_name, hook_fn)
+                make_hook(name, hook_fn)
             )
             self._hook_handles.append(handle)
 
@@ -307,6 +523,8 @@ class TappedModel:
         for handle in self._hook_handles:
             handle.remove()
         self._hook_handles.clear()
+        self._attn_hook_points.clear()
+        self._block_hook_points.clear()
 
     @property
     def _device(self) -> torch.device:

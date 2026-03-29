@@ -90,6 +90,51 @@ def load_registry(source: str | Path | None) -> Registry | None:
     return None
 
 
+def save_registry(registry: Registry, path: str | Path) -> None:
+    """Save a registry to a YAML file.
+
+    Args:
+        path: File path to save to (should end in .yaml or .yml).
+    """
+    path = Path(path)
+
+    # Collapse expanded layers back to {i} templates where possible
+    mapping = dict(registry.items())
+    collapsed = _collapse_layers(mapping)
+
+    data = {"mapping": collapsed}
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+
+def _collapse_layers(mapping: dict[str, str]) -> dict[str, str]:
+    """Try to collapse numbered layer entries back to {i} templates."""
+    import re
+
+    templates: dict[str, str] = {}
+    non_layer: dict[str, str] = {}
+
+    for omnilens_name, native_path in mapping.items():
+        # Check if this looks like a layer entry (has a number)
+        match = re.match(r"^(layers\.)(\d+)(\..*)", omnilens_name)
+        if match:
+            template_key = f"{match.group(1)}{{i}}{match.group(3)}"
+            native_template = re.sub(
+                r"(\.)(\d+)(\.|$)",
+                lambda m: f".{{i}}{m.group(3)}",
+                native_path,
+                count=1,
+            )
+            templates[template_key] = native_template
+        else:
+            non_layer[omnilens_name] = native_path
+
+    result = {}
+    result.update(non_layer)
+    result.update(templates)
+    return result
+
+
 def _load_yaml(path: Path) -> Registry:
     """Load a registry from a YAML file."""
     with open(path) as f:
