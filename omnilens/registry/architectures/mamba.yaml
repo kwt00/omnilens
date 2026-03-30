@@ -1,0 +1,15 @@
+# Mamba family (state-spaces/mamba)
+# SSM architecture — no attention or MLP, uses mixer block instead
+
+mapping:
+  embed.tokens: backbone.embeddings
+
+  layers.{i}.mixer.layer_norm: backbone.layers.{i}.norm
+  layers.{i}.mixer.in_proj: backbone.layers.{i}.mixer.in_proj
+  layers.{i}.mixer.conv1d: backbone.layers.{i}.mixer.conv1d
+  layers.{i}.mixer.x_proj: backbone.layers.{i}.mixer.x_proj
+  layers.{i}.mixer.dt_proj: backbone.layers.{i}.mixer.dt_proj
+  layers.{i}.mixer.out_proj: backbone.layers.{i}.mixer.out_proj
+
+  layer_norm_final: backbone.norm_f
+  unembed: lm_head

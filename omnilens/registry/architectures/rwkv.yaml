@@ -1,0 +1,19 @@
+# RWKV family (linear attention alternative)
+# Uses time_mix (attention-like) and channel_mix (feed-forward-like)
+
+mapping:
+  embed.tokens: rwkv.embeddings
+
+  layers.{i}.time_mix.layer_norm: rwkv.blocks.{i}.ln1
+  layers.{i}.time_mix.key: rwkv.blocks.{i}.attention.key
+  layers.{i}.time_mix.value: rwkv.blocks.{i}.attention.value
+  layers.{i}.time_mix.receptance: rwkv.blocks.{i}.attention.receptance
+  layers.{i}.time_mix.output: rwkv.blocks.{i}.attention.output
+
+  layers.{i}.channel_mix.layer_norm: rwkv.blocks.{i}.ln2
+  layers.{i}.channel_mix.key: rwkv.blocks.{i}.feed_forward.key
+  layers.{i}.channel_mix.receptance: rwkv.blocks.{i}.feed_forward.receptance
+  layers.{i}.channel_mix.value: rwkv.blocks.{i}.feed_forward.value
+
+  layer_norm_final: rwkv.ln_out
+  unembed: head
