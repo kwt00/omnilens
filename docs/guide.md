@@ -17,7 +17,9 @@ omnilens is a mechanistic interpretability library for any PyTorch/HuggingFace m
 9. [Transcoder](#9-transcoder)
 10. [Probe](#10-probe)
 11. [SteeringVector](#11-steeringvector)
-12. [Supported Architectures](#12-supported-architectures)
+12. [Visualization](#12-visualization)
+13. [Loading Pretrained SAEs](#13-loading-pretrained-saes)
+14. [Supported Architectures](#14-supported-architectures)
 
 ---
 
@@ -345,6 +347,35 @@ cache["layers.0.attention.q.weight"]   # shape: (d_model, d_model) or (d_head * 
 
 # Final layer norm weight
 cache["layer_norm_final.weight"]        # shape: (d_model,)
+```
+
+### Mamba (SSM)
+
+Mamba layers use `layers.{i}.mixer.*` instead of `attention.*` / `mlp.*`:
+
+```
+layers.{i}.mixer.layer_norm
+layers.{i}.mixer.in_proj
+layers.{i}.mixer.conv1d
+layers.{i}.mixer.x_proj
+layers.{i}.mixer.dt_proj
+layers.{i}.mixer.out_proj
+```
+
+### RWKV
+
+RWKV layers use `layers.{i}.time_mix.*` and `layers.{i}.channel_mix.*` instead of `attention.*` / `mlp.*`:
+
+```
+layers.{i}.time_mix.layer_norm
+layers.{i}.time_mix.key
+layers.{i}.time_mix.value
+layers.{i}.time_mix.receptance
+layers.{i}.time_mix.output
+layers.{i}.channel_mix.layer_norm
+layers.{i}.channel_mix.key
+layers.{i}.channel_mix.receptance
+layers.{i}.channel_mix.value
 ```
 
 ---
@@ -879,6 +910,21 @@ encoder = nn.Linear(d_model, n_features, bias=True)
 decoder = TiedDecoder(encoder)  # decoder(features) == F.linear(features, encoder.weight.T)
 ```
 
+### Loading pretrained SAEs from SAELens
+
+`SAE.from_saelens` loads weights from a SAELens-format directory or HuggingFace release. It maps SAELens weight keys (`W_enc`, `W_dec`, `b_enc`, `b_dec`) to omnilens format automatically and auto-detects the activation type (`standard` → `relu`, `topk`, `jumprelu`, `gated`).
+
+```python
+# Load from a local SAELens directory
+sae = SAE.from_saelens("./path/to/sae_dir/")
+
+# Load from HuggingFace (SAELens release)
+sae = SAE.from_saelens("gemma-2b-res-jb", sae_id="blocks.0.hook_resid_post")
+
+# Use it immediately
+features = sae.encode(cache["layers.0.residual.block_out"])
+```
+
 ---
 
 ## 9. Transcoder
@@ -1352,19 +1398,101 @@ vec.normalize().save("./sentiment_vector")
 
 ---
 
-## 12. Supported Architectures
+## 12. Visualization
+
+omnilens includes built-in plotting for attention patterns and result objects. Matplotlib is optional — install it with:
+
+```bash
+pip install omnilens[viz]
+```
+
+All plot functions return a `matplotlib.figure.Figure` for further customization or saving.
+
+### Attention patterns
+
+Plot attention weights for a single head or all heads in a layer:
+
+```python
+# All heads in layer 5
+fig = model.xray.plot_attention(text="The cat sat on the mat", layer=5)
+
+# Single head
+fig = model.xray.plot_attention(text="The cat sat on the mat", layer=5, head=3)
+```
+
+### Logit lens
+
+```python
+results = model.xray.logit_lens(text="The capital of France is")
+fig = results.plot()
+```
+
+### Activation patching
+
+```python
+results = model.xray.activation_patching(
+    clean="The capital of France is",
+    corrupted="The capital of Germany is",
+    names=["layers.{i}.residual.block_out"],
+    answer_tokens=[" Paris", " Berlin"],
+)
+fig = results.plot()
+```
+
+### Probe sweep
+
+```python
+results = Probe.sweep(
+    model,
+    hook_points="layers.{i}.residual.block_out",
+    texts=texts,
+    labels=labels,
+    n_classes=2,
+)
+fig = results.plot()
+```
+
+### Saving figures
+
+```python
+# Save any figure returned by .plot() or plot_attention()
+fig.savefig("my_plot.png", dpi=150)
+```
+
+---
+
+## 13. Loading Pretrained SAEs
+
+See [`SAE.from_saelens`](#loading-pretrained-saes-from-saelens) in the SAE section above for loading SAELens weights directly.
+
+---
+
+## 14. Supported Architectures
 
 The following architectures have built-in YAML registries and are supported out of the box:
 
-| Architecture | Covers |
-|---|---|
-| `llama` | Llama 2, Llama 3, Llama 3.1, Code Llama |
-| `mistral` | Mistral 7B and variants |
-| `gemma` | Gemma 1 |
-| `gemma2` | Gemma 2 |
-| `qwen2` | Qwen2 and Qwen2.5 |
-| `phi3` | Phi-3 |
-| `gpt2` | GPT-2 (all sizes) |
+| Architecture | model_type | Models | Registry |
+|---|---|---|---|
+| GPT-2 | gpt2 | GPT-2 | gpt2.yaml |
+| Llama | llama | Llama 2/3/3.1, DeepSeek, Yi, Code Llama | llama.yaml |
+| Mistral | mistral | Mistral, Mixtral | mistral.yaml |
+| Gemma | gemma | Gemma 1 | gemma.yaml |
+| Gemma 2 | gemma2 | Gemma 2 | gemma2.yaml |
+| Gemma 3 | gemma3 | Gemma 3 | gemma3.yaml |
+| Qwen 2 | qwen2 | Qwen 2, Qwen 2.5 | qwen2.yaml |
+| Qwen 3 | qwen3 | Qwen 3 | qwen3.yaml |
+| Phi-2 | phi | Phi-2 | phi.yaml |
+| Phi-3 | phi3 | Phi-3, Phi-3.5 | phi3.yaml |
+| GPT-NeoX / Pythia | gpt_neox | Pythia, GPT-NeoX | gpt_neox.yaml |
+| OPT | opt | OPT | opt.yaml |
+| GPT-J | gptj | GPT-J | gptj.yaml |
+| Falcon | falcon | Falcon | falcon.yaml |
+| BLOOM | bloom | BLOOM, BLOOMZ | bloom.yaml |
+| StableLM | stablelm | StableLM 2 | stablelm.yaml |
+| Mamba | mamba | Mamba (SSM) | mamba.yaml |
+| RWKV | rwkv | RWKV-4 | rwkv.yaml |
+
+Note: Mamba uses `layers.{i}.mixer.*` naming and RWKV uses `layers.{i}.time_mix.*` and `layers.{i}.channel_mix.*` instead of `attention.*` / `mlp.*`. See the [Naming Scheme](#3-naming-scheme) section for details.
 
 For any architecture not listed, omnilens falls back to auto-detection, which inspects the module tree for known attention/MLP patterns. Auto-detection covers many Llama-derived models (e.g. Vicuna, Alpaca, Mistral variants) even if not explicitly listed.
 
