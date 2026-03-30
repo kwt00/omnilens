@@ -26,6 +26,11 @@ class PatchingResult:
     patched_metrics: dict[str, float]
     names: list[str]
 
+    def plot(self, figsize=None):
+        """Plot patching effects as a bar chart."""
+        from omnilens.viz.plots import plot_patching
+        return plot_patching(self, figsize=figsize)
+
     def __repr__(self) -> str:
         return f"PatchingResult({len(self.effects)} components patched)"
 

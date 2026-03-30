@@ -29,6 +29,11 @@ class LogitLensResult:
     tokens: list[list[list[str]]]
     layer_indices: list[int]
 
+    def plot(self, position: int = -1, top_k: int = 1, figsize=None):
+        """Plot logit lens predictions across layers."""
+        from omnilens.viz.plots import plot_logit_lens
+        return plot_logit_lens(self, position=position, top_k=top_k, figsize=figsize)
+
     def __repr__(self) -> str:
         n_layers, batch, seq, vocab = self.logits.shape
         return (

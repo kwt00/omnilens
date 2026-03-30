@@ -89,3 +89,26 @@ class XRay:
             positions=positions,
             denoise=denoise,
         )
+
+    def plot_attention(
+        self,
+        text: str,
+        layer: int,
+        head: int | None = None,
+        figsize: tuple[int, int] | None = None,
+    ):
+        """Plot attention patterns as heatmaps.
+
+        Args:
+            text: Input text.
+            layer: Which layer to visualize.
+            head: Specific head, or None for all heads.
+            figsize: Figure size override.
+
+        Returns:
+            matplotlib Figure.
+        """
+        from omnilens.viz.plots import plot_attention
+        return plot_attention(
+            self._model, text=text, layer=layer, head=head, figsize=figsize
+        )

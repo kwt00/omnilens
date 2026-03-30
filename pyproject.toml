@@ -15,9 +15,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+viz = [
+    "matplotlib>=3.7",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
+    "matplotlib>=3.7",
 ]
 
 [tool.setuptools.packages.find]

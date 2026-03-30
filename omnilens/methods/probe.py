@@ -27,6 +27,11 @@ class ProbeResult:
         self.losses = losses or {}
         self.probes = probes or {}
 
+    def plot(self, figsize=None):
+        """Plot probe accuracy/loss across hook points."""
+        from omnilens.viz.plots import plot_probe_sweep
+        return plot_probe_sweep(self, figsize=figsize)
+
     def __repr__(self) -> str:
         n = len(self.accuracies or self.losses)
         return f"ProbeResult({n} hook points)"
