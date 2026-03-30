@@ -1,0 +1,18 @@
+# GPT-J family (EleutherAI)
+# Note: parallel attention+MLP architecture (single layernorm, no separate MLP layernorm)
+
+mapping:
+  embed.tokens: transformer.wte
+
+  layers.{i}.attention.layer_norm: transformer.h.{i}.ln_1
+  layers.{i}.attention.q: transformer.h.{i}.attn.q_proj
+  layers.{i}.attention.k: transformer.h.{i}.attn.k_proj
+  layers.{i}.attention.v: transformer.h.{i}.attn.v_proj
+  layers.{i}.attention.out_proj: transformer.h.{i}.attn.out_proj
+
+  layers.{i}.mlp.layer_norm: transformer.h.{i}.ln_1
+  layers.{i}.mlp.up_proj: transformer.h.{i}.mlp.fc_in
+  layers.{i}.mlp.down_proj: transformer.h.{i}.mlp.fc_out
+
+  layer_norm_final: transformer.ln_f
+  unembed: lm_head
