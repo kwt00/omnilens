@@ -7,7 +7,7 @@ name = "omnilens"
 version = "0.1.0"
 description = "Universal mechanistic interpretability primitives for any PyTorch model"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 dependencies = [
     "torch>=2.0",
     "transformers>=4.40",
