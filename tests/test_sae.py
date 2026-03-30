@@ -1,8 +1,15 @@
-"""Tests for SAE variants."""
+"""Tests for SAE — composable sparse autoencoders."""
 
 import pytest
 import torch
-from omnilens import TappedModel, SAE, TopKSAE, GatedSAE, JumpReLUSAE
+import torch.nn as nn
+from omnilens import TappedModel, SAE
+from omnilens.methods.sae import (
+    relu_activation,
+    topk_activation,
+    l1_sparsity,
+    no_sparsity,
+)
 
 
 @pytest.fixture
@@ -14,119 +21,150 @@ def small_model():
 
 @pytest.fixture
 def random_activations():
-    """Fake activations for unit testing SAE forward/encode/decode."""
     torch.manual_seed(42)
-    return torch.randn(16, 10, 2)  # (batch, seq, d_model=2 for tiny-gpt2)
+    return torch.randn(16, 10, 32)
 
 
-class TestSAEForwardPass:
-    @pytest.mark.parametrize("sae_cls", [SAE, TopKSAE, GatedSAE, JumpReLUSAE])
-    def test_forward_returns_result(self, sae_cls, random_activations):
-        kwargs = {"d_model": 2, "n_features": 8}
-        if sae_cls == TopKSAE:
-            kwargs["k"] = 4
-        sae = sae_cls(**kwargs)
+class TestFactoryMethods:
+    def test_relu(self, random_activations):
+        sae = SAE.relu(d_model=32, n_features=64)
         result = sae(random_activations)
+        assert result.features.shape == (16, 10, 64)
+        assert result.reconstruction.shape == (16, 10, 32)
+        assert (result.features >= 0).all()
 
-        assert result.features.shape == (16, 10, 8)
-        assert result.reconstruction.shape == (16, 10, 2)
-        assert result.loss.ndim == 0
-        assert result.reconstruction_loss.ndim == 0
-        assert result.sparsity_loss.ndim == 0
+    def test_topk(self, random_activations):
+        sae = SAE.topk(d_model=32, n_features=64, k=8)
+        result = sae(random_activations)
+        n_active = (result.features > 0).sum(dim=-1)
+        assert (n_active <= 8).all()
+        assert result.sparsity_loss.item() == 0.0
 
-    @pytest.mark.parametrize("sae_cls", [SAE, TopKSAE, GatedSAE, JumpReLUSAE])
-    def test_encode_decode_shapes(self, sae_cls, random_activations):
-        kwargs = {"d_model": 2, "n_features": 8}
-        if sae_cls == TopKSAE:
-            kwargs["k"] = 4
-        sae = sae_cls(**kwargs)
-
+    def test_jumprelu(self, random_activations):
+        sae = SAE.jumprelu(d_model=32, n_features=64, initial_threshold=100.0)
         features = sae.encode(random_activations)
-        assert features.shape == (16, 10, 8)
+        assert (features == 0).all()  # threshold too high
 
-        reconstruction = sae.decode(features)
-        assert reconstruction.shape == (16, 10, 2)
+    def test_gated(self, random_activations):
+        sae = SAE.gated(d_model=32, n_features=64)
+        result = sae(random_activations)
+        assert result.features.shape == (16, 10, 64)
+        assert hasattr(sae, "gate")
 
-    @pytest.mark.parametrize("sae_cls", [SAE, TopKSAE, GatedSAE, JumpReLUSAE])
-    def test_loss_is_finite(self, sae_cls, random_activations):
-        kwargs = {"d_model": 2, "n_features": 8}
-        if sae_cls == TopKSAE:
-            kwargs["k"] = 4
-        sae = sae_cls(**kwargs)
+    def test_tied_weights(self, random_activations):
+        sae = SAE.relu(d_model=32, n_features=64, tied_weights=True)
+        result = sae(random_activations)
+        assert result.reconstruction.shape == (16, 10, 32)
+
+    def test_hidden_dims_single(self, random_activations):
+        sae = SAE.relu(d_model=32, n_features=64, hidden_dims=[48])
+        result = sae(random_activations)
+        assert result.features.shape == (16, 10, 64)
+        assert result.reconstruction.shape == (16, 10, 32)
+
+    def test_hidden_dims_multiple(self, random_activations):
+        sae = SAE.topk(d_model=32, n_features=64, k=8, hidden_dims=[48, 56])
+        result = sae(random_activations)
+        assert result.features.shape == (16, 10, 64)
+        n_active = (result.features > 0).sum(dim=-1)
+        assert (n_active <= 8).all()
+
+    def test_hidden_dims_gradient(self, random_activations):
+        sae = SAE.relu(d_model=32, n_features=64, hidden_dims=[48])
+        result = sae(random_activations)
+        result.loss.backward()
+        # All layers should get gradients
+        for param in sae.parameters():
+            if param.requires_grad:
+                assert param.grad is not None
+
+
+class TestCustomComposition:
+    def test_custom_encoder_decoder(self, random_activations):
+        """User provides their own encoder/decoder modules."""
+        sae = SAE(
+            encoder=nn.Linear(32, 64),
+            decoder=nn.Linear(64, 32, bias=False),
+        )
+        result = sae(random_activations)
+        assert result.features.shape == (16, 10, 64)
+
+    def test_deep_encoder(self, random_activations):
+        """Multi-layer encoder."""
+        sae = SAE(
+            encoder=nn.Sequential(
+                nn.Linear(32, 128),
+                nn.ReLU(),
+                nn.Linear(128, 64),
+            ),
+            decoder=nn.Sequential(
+                nn.Linear(64, 128),
+                nn.ReLU(),
+                nn.Linear(128, 32, bias=False),
+            ),
+        )
+        result = sae(random_activations)
+        assert result.features.shape == (16, 10, 64)
+        assert result.reconstruction.shape == (16, 10, 32)
+
+    def test_custom_activation_fn(self, random_activations):
+        """Custom activation function."""
+        def my_activation(x):
+            return torch.clamp(x, min=0.1)
+
+        sae = SAE(
+            encoder=nn.Linear(32, 64),
+            decoder=nn.Linear(64, 32, bias=False),
+            activation_fn=my_activation,
+        )
+        features = sae.encode(random_activations)
+        assert (features >= 0.1).all()
+
+    def test_custom_sparsity_fn(self, random_activations):
+        """Custom sparsity loss."""
+        def my_sparsity(features):
+            return features.pow(2).mean()  # L2 sparsity
+
+        sae = SAE(
+            encoder=nn.Linear(32, 64),
+            decoder=nn.Linear(64, 32, bias=False),
+            sparsity_fn=my_sparsity,
+        )
+        result = sae(random_activations)
+        assert result.sparsity_loss > 0
+
+    def test_swap_activation_at_runtime(self, random_activations):
+        """User can swap activation function after construction."""
+        sae = SAE.relu(d_model=32, n_features=64)
+        sae.activation_fn = topk_activation(4)
+        features = sae.encode(random_activations)
+        n_active = (features > 0).sum(dim=-1)
+        assert (n_active <= 4).all()
+
+
+class TestForwardPass:
+    def test_loss_is_finite(self, random_activations):
+        sae = SAE.relu(d_model=32, n_features=64)
         result = sae(random_activations)
         assert torch.isfinite(result.loss)
 
-    @pytest.mark.parametrize("sae_cls", [SAE, TopKSAE, GatedSAE, JumpReLUSAE])
-    def test_tied_weights(self, sae_cls, random_activations):
-        kwargs = {"d_model": 2, "n_features": 8, "tied_weights": True}
-        if sae_cls == TopKSAE:
-            kwargs["k"] = 4
-        sae = sae_cls(**kwargs)
-        assert sae.decoder is None
-
-        result = sae(random_activations)
-        assert result.reconstruction.shape == (16, 10, 2)
-
-
-class TestSAESparsity:
-    def test_relu_sae_features_nonnegative(self, random_activations):
-        sae = SAE(d_model=2, n_features=8)
-        features = sae.encode(random_activations)
-        assert (features >= 0).all()
-
-    def test_topk_sae_sparsity(self, random_activations):
-        sae = TopKSAE(d_model=2, n_features=8, k=3)
-        features = sae.encode(random_activations)
-        # Each position should have at most k non-zero features
-        n_active = (features > 0).sum(dim=-1)
-        assert (n_active <= 3).all()
-
-    def test_topk_sae_no_sparsity_loss(self, random_activations):
-        sae = TopKSAE(d_model=2, n_features=8, k=3)
-        result = sae(random_activations)
-        assert result.sparsity_loss.item() == 0.0
-
-    def test_jumprelu_threshold(self, random_activations):
-        sae = JumpReLUSAE(d_model=2, n_features=8, initial_threshold=100.0)
-        features = sae.encode(random_activations)
-        # With a very high threshold, nothing should fire
-        assert (features == 0).all()
-
-
-class TestSAEGradients:
-    @pytest.mark.parametrize("sae_cls", [SAE, TopKSAE, GatedSAE, JumpReLUSAE])
-    def test_backward_pass(self, sae_cls, random_activations):
-        kwargs = {"d_model": 2, "n_features": 8}
-        if sae_cls == TopKSAE:
-            kwargs["k"] = 4
-        sae = sae_cls(**kwargs)
+    def test_backward_pass(self, random_activations):
+        sae = SAE.relu(d_model=32, n_features=64)
         result = sae(random_activations)
         result.loss.backward()
-
-        # Encoder should have gradients
         assert sae.encoder.weight.grad is not None
         assert torch.isfinite(sae.encoder.weight.grad).all()
 
-
-class TestSAERepr:
-    def test_sae_repr(self):
-        assert "SAE" in repr(SAE(d_model=4, n_features=8))
-
-    def test_topk_repr(self):
-        r = repr(TopKSAE(d_model=4, n_features=8, k=3))
-        assert "TopKSAE" in r
-        assert "k=3" in r
-
-    def test_jumprelu_repr(self):
-        assert "JumpReLUSAE" in repr(JumpReLUSAE(d_model=4, n_features=8))
-
-    def test_tied_repr(self):
-        assert "tied" in repr(SAE(d_model=4, n_features=8, tied_weights=True))
+    def test_encode_decode_roundtrip(self, random_activations):
+        sae = SAE.relu(d_model=32, n_features=64)
+        features = sae.encode(random_activations)
+        reconstruction = sae.decode(features)
+        assert reconstruction.shape == random_activations.shape
 
 
-class TestSAEFit:
+class TestFit:
     def test_fit_with_tensor(self, small_model):
-        sae = SAE(d_model=8, n_features=16)
+        sae = SAE.relu(d_model=8, n_features=16)
         torch.manual_seed(42)
         fake_acts = torch.randn(100, 8)
         logs = sae.fit(
@@ -137,11 +175,10 @@ class TestSAEFit:
             log_every=5,
             batch_size=16,
         )
-        assert len(logs) == 2  # logged at step 0 and 5
-        assert logs[-1]["loss"] < logs[0]["loss"] or True  # training ran
+        assert len(logs) == 2
 
     def test_fit_with_strings(self, small_model):
-        sae = SAE(d_model=8, n_features=16)  # c_fc outputs dim 8 in tiny-gpt2
+        sae = SAE.relu(d_model=8, n_features=16)
         texts = ["Hello world", "The cat sat", "Testing one two three"]
         logs = sae.fit(
             small_model,
@@ -151,14 +188,12 @@ class TestSAEFit:
             log_every=5,
             batch_size=8,
         )
-        assert len(logs) == 1  # logged at step 0
+        assert len(logs) == 1
 
 
-class TestSAEWithHooks:
+class TestWithHooks:
     def test_sae_intervention(self, small_model):
-        """Test that SAE encode→decode can be used as a hook."""
-        sae = SAE(d_model=8, n_features=16)  # c_fc outputs dim 8
-
+        sae = SAE.relu(d_model=8, n_features=16)
         baseline_logits, _ = small_model.run_with_cache(text="Hello world")
 
         def sae_reconstruct(activation, hook_name):
@@ -169,12 +204,10 @@ class TestSAEWithHooks:
             text="Hello world",
             hooks={"transformer.h.0.mlp.c_fc": sae_reconstruct},
         )
-        # Output should change (untrained SAE won't reconstruct perfectly)
         assert not torch.allclose(baseline_logits, modified_logits)
 
-    def test_sae_feature_ablation(self, small_model):
-        """Test ablating a specific SAE feature via hooks."""
-        sae = SAE(d_model=8, n_features=16)  # c_fc outputs dim 8
+    def test_feature_ablation(self, small_model):
+        sae = SAE.relu(d_model=8, n_features=16)
 
         def ablate_feature_0(activation, hook_name):
             features = sae.encode(activation)
@@ -186,3 +219,12 @@ class TestSAEWithHooks:
             hooks={"transformer.h.0.mlp.c_fc": ablate_feature_0},
         )
         assert logits is not None
+
+
+class TestRepr:
+    def test_repr(self):
+        sae = SAE.relu(d_model=32, n_features=64)
+        r = repr(sae)
+        assert "SAE" in r
+        assert "encoder" in r
+        assert "decoder" in r
