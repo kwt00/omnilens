@@ -366,6 +366,87 @@ class SAE(nn.Module):
         sae.load_state_dict(torch.load(path / "weights.pt", weights_only=True))
         return sae
 
+    @classmethod
+    def from_saelens(
+        cls,
+        path_or_release: str | Path,
+        sae_id: str | None = None,
+        device: str = "cpu",
+    ) -> SAE:
+        """Load a pretrained SAE from SAELens format.
+
+        Supports two modes:
+          1. Local directory containing sae_weights.safetensors + cfg.json
+          2. SAELens release name + sae_id (downloads from HuggingFace)
+
+        Args:
+            path_or_release: Path to local directory, or SAELens release name
+                (e.g. "gemma-2b-res-jb").
+            sae_id: SAE identifier within a release (e.g. "blocks.0.hook_resid_post").
+                Required when loading from a release, ignored for local paths.
+            device: Device to load weights onto.
+
+        Returns:
+            An omnilens SAE with the pretrained weights loaded.
+
+        Examples:
+            sae = SAE.from_saelens("./my_saelens_sae/")
+            sae = SAE.from_saelens("gemma-2b-res-jb", sae_id="blocks.0.hook_resid_post")
+        """
+        path = Path(path_or_release)
+
+        if path.is_dir():
+            # Local directory
+            cfg_dict, state_dict = _load_saelens_local(path, device)
+        else:
+            # HuggingFace release
+            cfg_dict, state_dict = _load_saelens_remote(
+                str(path_or_release), sae_id, device
+            )
+
+        # Map SAELens architecture to our activation names
+        arch = cfg_dict.get("architecture", "standard")
+        activation_map = {
+            "standard": "relu",
+            "topk": "topk",
+            "jumprelu": "jumprelu",
+            "gated": "gated",
+        }
+        activation = activation_map.get(arch, "relu")
+
+        d_model = cfg_dict["d_in"]
+        n_features = cfg_dict["d_sae"]
+        k = cfg_dict.get("k", cfg_dict.get("activation_fn_kwargs", {}).get("k", 32))
+
+        sae = cls(
+            d_model=d_model,
+            n_features=n_features,
+            activation=activation,
+            k=k,
+        )
+
+        # Map SAELens weight keys to ours
+        # SAELens: W_enc (d_in, d_sae), W_dec (d_sae, d_in), b_enc (d_sae), b_dec (d_in)
+        # Ours: encoder.weight (d_sae, d_in), decoder.weight (d_in, d_sae),
+        #        encoder.bias (d_sae), pre_bias (d_in)
+        our_state_dict = {}
+        our_state_dict["encoder.weight"] = state_dict["W_enc"].T
+        our_state_dict["encoder.bias"] = state_dict["b_enc"]
+        our_state_dict["decoder.weight"] = state_dict["W_dec"].T
+        our_state_dict["pre_bias"] = state_dict["b_dec"]
+
+        # Handle extra keys for specific architectures
+        if "threshold" in state_dict:
+            our_state_dict["threshold"] = state_dict["threshold"]
+        if "W_gate" in state_dict:
+            our_state_dict["gate.weight"] = state_dict["W_gate"].T
+        if "b_gate" in state_dict:
+            our_state_dict["gate.bias"] = state_dict["b_gate"]
+
+        sae.load_state_dict(our_state_dict, strict=False)
+        sae.to(device)
+        return sae
+
     def __repr__(self) -> str:
         parts = [f"d_model={self.d_model}", f"n_features={self.n_features}"]
         parts.append(f"activation='{self._activation_name}'")
@@ -472,3 +553,68 @@ def _collect_activations(
         all_activations.append(acts.reshape(-1, acts.shape[-1]).to(device))
 
     return torch.cat(all_activations, dim=0)
+
+
+def _load_saelens_local(
+    path: Path, device: str
+) -> tuple[dict, dict[str, torch.Tensor]]:
+    """Load SAELens format from a local directory."""
+    cfg_path = path / "cfg.json"
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"No cfg.json found in {path}")
+
+    with open(cfg_path) as f:
+        cfg_dict = json.load(f)
+
+    # Try safetensors first, fall back to pt
+    weights_path = path / "sae_weights.safetensors"
+    if weights_path.exists():
+        from safetensors.torch import load_file
+        state_dict = load_file(str(weights_path), device=device)
+    else:
+        weights_path = path / "sae_weights.pt"
+        if weights_path.exists():
+            state_dict = torch.load(weights_path, map_location=device, weights_only=True)
+        else:
+            raise FileNotFoundError(
+                f"No weight file found in {path}. "
+                f"Expected sae_weights.safetensors or sae_weights.pt"
+            )
+
+    return cfg_dict, state_dict
+
+
+def _load_saelens_remote(
+    release: str, sae_id: str | None, device: str
+) -> tuple[dict, dict[str, torch.Tensor]]:
+    """Load SAELens format from a HuggingFace release."""
+    if sae_id is None:
+        raise ValueError(
+            "sae_id is required when loading from a SAELens release. "
+            "Example: SAE.from_saelens('gemma-2b-res-jb', sae_id='blocks.0.hook_resid_post')"
+        )
+
+    try:
+        from sae_lens import SAE as SaeLensSAE
+    except ImportError:
+        raise ImportError(
+            "Loading from SAELens releases requires sae-lens to be installed. "
+            "Install it with: pip install sae-lens"
+        )
+
+    saelens_sae = SaeLensSAE.from_pretrained(
+        release=release, sae_id=sae_id, device=device
+    )
+
+    cfg_dict = {
+        "d_in": saelens_sae.cfg.d_in,
+        "d_sae": saelens_sae.cfg.d_sae,
+        "architecture": saelens_sae.cfg.architecture(),
+    }
+
+    # Try to get k for topk
+    if hasattr(saelens_sae.cfg, "activation_fn_kwargs"):
+        cfg_dict["activation_fn_kwargs"] = saelens_sae.cfg.activation_fn_kwargs
+
+    state_dict = saelens_sae.state_dict()
+    return cfg_dict, state_dict
