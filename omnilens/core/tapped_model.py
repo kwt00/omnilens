@@ -342,15 +342,6 @@ class TappedModel:
             else:
                 return
 
-        # Skip wrapping for models with partial rotary embeddings
-        # (e.g. Phi-2, Qwen3) — our RoPE implementation assumes full-dim
-        partial_rotary = getattr(config, "partial_rotary_factor", None)
-        if partial_rotary is not None and partial_rotary < 1.0:
-            return
-        # Qwen3 uses qk_rope_head_dim which indicates partial rotary
-        if hasattr(config, "qk_rope_head_dim"):
-            return
-
         n_layers = self._detect_n_layers()
         if n_layers is None:
             return

@@ -168,7 +168,9 @@ def _detect_projections(attn_module: nn.Module) -> dict | None:
         return {
             "style": "separate",
             "q": "q_proj", "k": "k_proj", "v": "v_proj",
-            "out": "o_proj" if "o_proj" in children else "out_proj",
+            "out": next(
+                n for n in ("o_proj", "out_proj", "dense") if n in children
+            ),
         }
 
     # Fused QKV (GPT-2)
@@ -221,11 +223,27 @@ def _apply_rotary(
     cos: torch.Tensor,
     sin: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply rotary position embeddings to Q and K."""
-    # Standard RoPE implementation
-    q_embed = (q * cos) + (_rotate_half(q) * sin)
-    k_embed = (k * cos) + (_rotate_half(k) * sin)
-    return q_embed, k_embed
+    """Apply rotary position embeddings to Q and K.
+
+    Handles both full and partial rotary embeddings. When cos/sin have
+    a smaller dimension than Q/K, only the first rotary_dim dimensions
+    get rotated and the rest pass through unchanged.
+    """
+    rotary_dim = cos.shape[-1]
+
+    if rotary_dim < q.shape[-1]:
+        # Partial rotary (Phi-2, Qwen 3, etc.)
+        q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+        k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
+        q_rot = (q_rot * cos) + (_rotate_half(q_rot) * sin)
+        k_rot = (k_rot * cos) + (_rotate_half(k_rot) * sin)
+        q = torch.cat([q_rot, q_pass], dim=-1)
+        k = torch.cat([k_rot, k_pass], dim=-1)
+    else:
+        q = (q * cos) + (_rotate_half(q) * sin)
+        k = (k * cos) + (_rotate_half(k) * sin)
+
+    return q, k
 
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
