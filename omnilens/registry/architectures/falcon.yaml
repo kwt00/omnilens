@@ -1,0 +1,16 @@
+# Falcon family (TII)
+# Note: fused query_key_value projection, can be parallel or sequential attention+MLP
+
+mapping:
+  embed.tokens: transformer.word_embeddings
+
+  layers.{i}.attention.layer_norm: transformer.h.{i}.input_layernorm
+  layers.{i}.attention.q: transformer.h.{i}.self_attention.query_key_value  # fused QKV
+  layers.{i}.attention.out_proj: transformer.h.{i}.self_attention.dense
+
+  layers.{i}.mlp.layer_norm: transformer.h.{i}.post_attention_layernorm
+  layers.{i}.mlp.up_proj: transformer.h.{i}.mlp.dense_h_to_4h
+  layers.{i}.mlp.down_proj: transformer.h.{i}.mlp.dense_4h_to_h
+
+  layer_norm_final: transformer.ln_f
+  unembed: lm_head

@@ -1,0 +1,19 @@
+# Phi-2 family (Microsoft)
+# Note: no separate MLP layernorm, uses single input_layernorm
+# Attention output projection is called "dense" not "o_proj"
+
+mapping:
+  embed.tokens: model.embed_tokens
+
+  layers.{i}.attention.layer_norm: model.layers.{i}.input_layernorm
+  layers.{i}.attention.q: model.layers.{i}.self_attn.q_proj
+  layers.{i}.attention.k: model.layers.{i}.self_attn.k_proj
+  layers.{i}.attention.v: model.layers.{i}.self_attn.v_proj
+  layers.{i}.attention.out_proj: model.layers.{i}.self_attn.dense
+
+  layers.{i}.mlp.layer_norm: model.layers.{i}.input_layernorm
+  layers.{i}.mlp.up_proj: model.layers.{i}.mlp.fc1
+  layers.{i}.mlp.down_proj: model.layers.{i}.mlp.fc2
+
+  layer_norm_final: model.final_layernorm
+  unembed: lm_head
