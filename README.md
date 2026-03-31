@@ -38,7 +38,9 @@ attn  = cache["layers.15.attention.weights"]    # (1, heads, seq, seq)
 
 ## Built-in architectures
 
-**Transformers:** Llama 2/3/3.1, DeepSeek, Yi, Mistral, Gemma 1/2/3, Qwen 2/2.5/3, Phi-2, Phi-3, GPT-2, Pythia/GPT-NeoX, OPT, GPT-J, Falcon, BLOOM, StableLM
+**Transformers:** Llama 2/3/3.1, DeepSeek V2/V3, Kimi K2, Yi, Mistral, Gemma 1/2/3, Qwen 2/2.5/3, Phi-2, Phi-3, GPT-2, Pythia/GPT-NeoX, OPT, GPT-J, Falcon, BLOOM, StableLM
+
+**MoE:** DeepSeek V2/V3, Kimi K2 (multi-latent attention + mixture of experts)
 
 **Non-transformers:** Mamba (SSM), RWKV (linear attention)
 

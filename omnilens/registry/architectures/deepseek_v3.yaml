@@ -1,0 +1,23 @@
+# DeepSeek V3 / Kimi K2 — multi-latent attention (MLA) + MoE
+# Same architecture as DeepSeek V2 with minor differences
+
+mapping:
+  embed.tokens: model.embed_tokens
+
+  layers.{i}.attention.layer_norm: model.layers.{i}.input_layernorm
+  layers.{i}.attention.q: model.layers.{i}.self_attn.q_proj
+  layers.{i}.attention.q_a_proj: model.layers.{i}.self_attn.q_a_proj
+  layers.{i}.attention.q_b_proj: model.layers.{i}.self_attn.q_b_proj
+  layers.{i}.attention.kv_a_proj: model.layers.{i}.self_attn.kv_a_proj_with_mqa
+  layers.{i}.attention.kv_b_proj: model.layers.{i}.self_attn.kv_b_proj
+  layers.{i}.attention.out_proj: model.layers.{i}.self_attn.o_proj
+
+  layers.{i}.mlp.layer_norm: model.layers.{i}.post_attention_layernorm
+  layers.{i}.mlp.gate_proj: model.layers.{i}.mlp.gate_proj
+  layers.{i}.mlp.up_proj: model.layers.{i}.mlp.up_proj
+  layers.{i}.mlp.down_proj: model.layers.{i}.mlp.down_proj
+  layers.{i}.mlp.router: model.layers.{i}.mlp.gate
+  layers.{i}.mlp.shared_experts: model.layers.{i}.mlp.shared_experts
+
+  layer_norm_final: model.norm
+  unembed: lm_head
