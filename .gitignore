@@ -20,4 +20,4 @@ htmlcov/
 
 # Tools
 .omc/
-.claude/
+.claude/node_modules/

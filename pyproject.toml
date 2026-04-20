@@ -29,6 +29,11 @@ dependencies = [
 viz = [
     "matplotlib>=3.7",
 ]
+live = [
+    "fastapi>=0.104",
+    "uvicorn[standard]>=0.24",
+    "websockets>=12.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
@@ -40,3 +45,4 @@ include = ["omnilens*"]
 
 [tool.setuptools.package-data]
 "omnilens.registry.architectures" = ["*.yaml"]
+"omnilens.viz.live.frontend" = ["dist/**/*"]
